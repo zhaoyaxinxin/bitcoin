@@ -24,6 +24,7 @@ Exercise4/
 ├── p2pkh.py             # P2PKH 脚本与单笔转账工具
 ├── split_test_coins.py  # UTXO 拆分工具
 ├── utils.py             # 交易构造/签名/校验/广播的公共函数
+├── design_doc.txt       # 设计文档（对应练习 D 的 a/b/c/d 四问）
 └── requirements.txt
 ```
 
