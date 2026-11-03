@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+*.zip
+*.rar
+.venv/
+.DS_Store
+Thumbs.db
