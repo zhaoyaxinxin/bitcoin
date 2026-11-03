@@ -29,17 +29,17 @@ if __name__ == '__main__':
     SelectParams('testnet')
 
     ######################################################################
-    #
+    # TODO: set these parameters correctly
     #
 
-    my_private_key = CBitcoinSecret('cRTUBePmkbaC7LKD1cJvqRkhhePcUBdJiXcUzzBCvGfErwqEuAz2')
+    my_private_key = CBitcoinSecret('XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX')
 
     my_public_key = my_private_key.pub
     my_address = P2PKHBitcoinAddress.from_pubkey(my_public_key)
 
-    amount_to_send = 0.1 # amount of BTC in the output you're splitting minus fee
+    amount_to_send = None # amount of BTC in the output you're splitting minus fee
     txid_to_spend = (
-        '3511dd5640ae599daf84d9f6b96833e7692ce3ee89c8038be42e7e4a920c56c1')
+        'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX')
     utxo_index = 0
     n = 10 # number of outputs to split the input into
     network = 'btc-test3' # either 'btc-test3' or 'bcy-test'

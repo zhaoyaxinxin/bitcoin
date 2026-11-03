@@ -2,7 +2,7 @@ from bitcoin import SelectParams
 from bitcoin.core.script import OP_DUP, OP_HASH160, OP_EQUALVERIFY, OP_CHECKSIG
 
 from utils import create_OP_CHECKSIG_signature, create_txout, create_txin, create_signed_transaction, broadcast_transaction
-from bitcoin.wallet import CBitcoinSecret, P2PKHBitcoinAddress, CBitcoinAddress
+from bitcoin.wallet import CBitcoinSecret, P2PKHBitcoinAddress
 
 def P2PKH_scriptPubKey(address):
     return [OP_DUP, OP_HASH160, address, OP_EQUALVERIFY, OP_CHECKSIG]
@@ -43,16 +43,16 @@ if __name__ == '__main__':
     ######################################################################
     #
 
-    my_private_key = CBitcoinSecret('cRTUBePmkbaC7LKD1cJvqRkhhePcUBdJiXcUzzBCvGfErwqEuAz2')
+    my_private_key = CBitcoinSecret('XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX')
 
     my_public_key = my_private_key.pub
     my_address = P2PKHBitcoinAddress.from_pubkey(my_public_key)
 
     faucet_address = CBitcoinAddress('mv4rnyY3Su5gjcDNzbMLKBQkBicCtHUtFB')
-    amount_to_send = 0.1
+    amount_to_send = None
     txid_to_spend = (
-        '3511dd5640ae599daf84d9f6b96833e7692ce3ee89c8038be42e7e4a920c56c1')
-    utxo_index = 0
+        'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX')
+    utxo_index = None
     network = 'btc-test3'
 
     #

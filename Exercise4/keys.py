@@ -4,18 +4,42 @@ from bitcoin.core import x
 
 SelectParams('testnet')
 
+######################################################################
+# 
+# TODO: Fill this in with address secret key for BTC testnet3
+#
+# Create address in Base58 with keygen.py
+# Send coins at https://coinfaucet.eu/en/btc-testnet/
+
+# Only to be imported by alice.py
+# Alice should have coins!!
 alice_secret_key_BTC = CBitcoinSecret(
-    'cRTUBePmkbaC7LKD1cJvqRkhhePcUBdJiXcUzzBCvGfErwqEuAz2')
+    'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX')
 
+# Only to be imported by bob.py
 bob_secret_key_BTC = CBitcoinSecret(
-    'cTdgTL9SKkqndopkgw8s1DsPHg2SUZhkrKnvWzw3Cj8pP4hFLCAh')
+    'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX')
 
+######################################################################
+#
+# TODO: Fill this in with address secret key for BCY testnet
+#
+# Create address in hex with
+# curl -X POST https://api.blockcypher.com/v1/bcy/test/addrs?token=$YOURTOKEN
+#
+# Send coins with 
+# curl -d '{"address": "BCY_ADDRESS", "amount": 1000000}' https://api.blockcypher.com/v1/bcy/test/faucet?token=<YOURTOKEN>
+
+# Only to be imported by alice.py
 alice_secret_key_BCY = CBitcoinSecret.from_secret_bytes(
-    x('c97b412707d724a588a8efffeb2697f2950b3bd8a200e3d3db8fc75740d4e546'))
+    x('XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'))
 
+# Only to be imported by bob.py
+# Bob should have coins!!
 bob_secret_key_BCY = CBitcoinSecret.from_secret_bytes(
-    x('7ccb74982095bba2b8b8014d6bceaf43eae9a360f4e446fa5893c5ee856a2835'))
+    x('XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'))
 
+# Can be imported by alice.py or bob.py
 alice_public_key_BTC = alice_secret_key_BTC.pub
 alice_address_BTC = P2PKHBitcoinAddress.from_pubkey(alice_public_key_BTC)
 
