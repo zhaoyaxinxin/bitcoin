@@ -44,4 +44,3 @@ def coinExchangeScriptSig2(sig_sender, sig_recipient):
 #
 #
 ######################################################################
-
