@@ -1,397 +1,419 @@
 ================================================================================
-                    Exercise 4 设计文档
-    跨链原子交换（Cross-chain Atomic Swap）：BTC Testnet3 <-> BCY Testnet
+                            Exercise 4 设计文档
+              跨链原子交换（Cross-chain Atomic Swap）
+                    BTC Testnet3  <->  BCY Testnet
 ================================================================================
 
-姓名：
-学号：
-日期：2026-10-27
+姓名：赵亚鑫                          学号：2413715
+合作者：张煜坤                        学号：2413654
+日期：2026-11-03
 
-运行环境：Python 3.12.9 / python-bitcoinlib 0.12.2 / requests
-运行模式：broadcast_transactions = False（按实验要求进行本地验证，不广播到区块链）
+分工说明
+    赵亚鑫（2413715）扮演 Alice：负责 BTC 侧参数、BCY 密钥与 swap_scripts.py 实现
+    张煜坤（2413654）扮演 Bob  ：负责 BCY 侧参数与密钥
 
-参数配置：
-    链高度      btc_test3_chain_height = 4,997,970
-                bcy_test_chain_height  = 2,611,494
-    锁定期      alice_locktime = 5（块），bob_locktime = 3（块），满足 alice > bob
-    金额        alice_amount_to_send = 0.1 BTC，bob_amount_to_send = 0.01 BCY
-    手续费      tx_fee = 0.001
-    秘密        alice_secret_x = b"thisIsASecretPassword123"
-    承诺        H(x) = RIPEMD160(SHA256(x)) = 853b775079232503df966e626618e1d388a95720
+运行环境    Python 3.12.9 · python-bitcoinlib 0.12.2
+运行模式    broadcast_transactions = False（本地验证，不向区块链广播）
+验证结果    两条分支均通过，共 8 次 VerifyScript 全部返回真
 
+--------------------------------------------------------------------------------
+一、参数
+--------------------------------------------------------------------------------
 
-================================================================================
-一、代码内容与 coinExchangeScript 的工作原理（对应练习 A、B）
-================================================================================
+    链高度      BTC testnet3 = 5,261,062        BCY testnet = 2,622,055
+    锁定期      alice_locktime = 5 块，bob_locktime = 3 块（满足 alice > bob）
+    手续费      tx_fee = 0.000001（100 聪）
+    秘密        x  = b"thisIsASecretPassword123"
+    哈希承诺    H(x) = RIPEMD160(SHA256(x)) = 853b775079232503df966e626618e1d388a95720
 
-1.1 三个函数的分工
+    Alice（赵亚鑫 2413715）
+           BTC 地址  mxadnG3Msoii4uDodnEMahfHoraHDhKnJG
+           花费的 UTXO  42fb58f5a8f20294d0609cddb9bb0e42b32469894005434d70807beeeaa2f752 : 3
+           金额      19,738 聪（0.00019738 BTC）
 
-    coinExchangeScript(public_key_sender, public_key_recipient, hash_of_secret)
-        生成交换交易的 ScriptPubKey，即锁定脚本。它规定了一个 UTXO 只能被两种方式之一花费。
+    Bob（张煜坤 2413654）
+           BCY 地址  By5KUaF4BGW1vt6EoiBfyGnQtgZJrfxkAX
+           花费的 UTXO  b8afcccd2635a367d6fdc62c0a28e3be74c90fef0ce9e518fb3c580cc00f35d7 : 0
+           金额      50,000 聪（0.0005 BCY）
 
-    coinExchangeScriptSig1(sig_recipient, secret)
-        生成"知道秘密 x 的接收方"赎回时使用的 ScriptSig，走哈希锁分支。
-
-    coinExchangeScriptSig2(sig_sender, sig_recipient)
-        生成"发送方 + 接收方双签"取回时使用的 ScriptSig，走多签退款分支。
-
-1.2 ScriptPubKey 的结构
-
-最终生成 12 个 opcode：
-
-    OP_IF
-        OP_HASH160  <hash_of_secret>  OP_EQUALVERIFY  <pk_recipient>  OP_CHECKSIG
-    OP_ELSE
-        <pk_sender>  OP_CHECKSIGVERIFY  <pk_recipient>  OP_CHECKSIG
-    OP_ENDIF
-
-实测反汇编（Alice 向 Bob 发送 BTC 时生成的实际脚本）：
-
-    63                 OP_IF
-    a9                 OP_HASH160
-    14 853b77...5720   PUSH 20 字节  H(x)
-    88                 OP_EQUALVERIFY
-    21 03c168...1108   PUSH 33 字节  Bob 压缩公钥（recipient）
-    ac                 OP_CHECKSIG
-    67                 OP_ELSE
-    21 038a3b...0470   PUSH 33 字节  Alice 压缩公钥（sender）
-    ad                 OP_CHECKSIGVERIFY
-    21 03c168...1108   PUSH 33 字节  Bob 压缩公钥（recipient）
-    ac                 OP_CHECKSIG
-    68                 OP_ENDIF
-
-注意：参数顺序不可颠倒。CScript(list) 的语义是"列表靠后的元素最后入栈、位于栈顶"，
-所以 coinExchangeScriptSig2 虽然参数写作 (sig_sender, sig_recipient)，返回的列表必须是
-[sig_recipient, sig_sender, OP_FALSE]，才能使 sig_sender 先与 pk_sender 配对验证。
-
-1.3 两条执行路径的栈推演
-
-(1) 哈希锁分支 —— 接收方（Bob）知道 x 时赎回
-
-    ScriptSig: [sig_bob, x, OP_TRUE]
-    执行过程：
-        栈 = sig_bob | x | true
-        OP_IF 弹出 true ────────────────────> 进入 IF 分支
-        栈 = sig_bob | x
-        OP_HASH160 对 x 求哈希 ─────────────> 栈 = sig_bob | H(x)
-        PUSH H(x) 后 OP_EQUALVERIFY 比较 ──> 相等则继续，否则脚本失败
-        栈 = sig_bob
-        PUSH pk_bob, OP_CHECKSIG ──────────> 用 Bob 公钥验证 Bob 签名 ──> 真
-
-    结果：只要 Bob 持有正确的 x 并能签名，就能花掉这笔 UTXO。
-
-(2) 双签退款分支 —— 发送方（Alice）与接收方（Bob）都签名时取回
-
-    ScriptSig: [sig_bob, sig_alice, OP_FALSE]
-    执行过程：
-        栈 = sig_bob | sig_alice | false
-        OP_IF 弹出 false ───────────────────> 进入 ELSE 分支
-        栈 = sig_bob | sig_alice
-        PUSH pk_alice, OP_CHECKSIGVERIFY ──> 用 Alice 公钥验证 sig_alice ──> 真则继续
-        栈 = sig_bob
-        PUSH pk_bob, OP_CHECKSIG ──────────> 用 Bob 公钥验证 sig_bob ──> 真
-
-    结果：两人都签名时，这笔 UTXO 可以被花掉（本作业中用于超时退款）。
-
-1.4 为什么用 OP_CHECKSIGVERIFY + OP_CHECKSIG 而不是 OP_2 OP_CHECKMULTISIG
-
-    OP_CHECKMULTISIG 有一个历史遗留缺陷：执行时会多弹出一个栈元素，因此 ScriptSig
-    必须在末尾额外压入一个 dummy 值 OP_0，且签名顺序必须与公钥顺序严格一致，否则验证
-    直接失败。而这里只需要"两个签名都要有效"，用 CHECKSIGVERIFY 串联两次单签即可达成
-    完全等价的效果，栈的布局更直观，也不会踩到 dummy 元素的坑。
-
-1.5 时间锁不在脚本里
-
-    coinExchangeScript 的函数签名中没有 locktime 参数，因此无法把
-    OP_CHECKLOCKTIMEVERIFY 写入脚本。本方案的时间锁由退款交易自身的 nLockTime 字段承担：
-    退款交易被构造时就设定了 nLockTime = 当前链高度 + 锁定期，在该高度之前矿工不会打包它，
-    从而形成"期限内不能退、期限后可以退"的约束。
-
-    实测退款交易的 nLockTime：
-        Alice（BTC）：4,997,975 = 4,997,970 + 5
-        Bob  （BCY）：2,611,497 = 2,611,494 + 3
+    说明：Alice 与 Bob 的 BCY 地址在 keys.py 中由本地 testnet 参数派生（m/n 前缀），
+    链上实际使用 BlockCypher 的 B 前缀格式。两者公钥哈希相同，脚本层等价。
 
 
 ================================================================================
-二、Alice 为什么总能拿回钱？为什么不能简单用 1/2 multisig？（对应练习 B）
+二、代码内容与 coinExchangeScript 的工作原理            （对应练习 A、B）
 ================================================================================
 
-2.1 Alice 总有退路的原因
+2.1 我实现的三个函数
 
-    以 Alice 用 coinExchangeScript 向 Bob 发送 0.1 BTC 为例。关键在于 swap.py 中的
-    调用次序：
+    本次作业需要实现的只有 swap_scripts.py 中的三个函数，其余文件仅填写参数：
 
-        第 1 步  Alice 生成交换交易 T1（钱锁在 hash/timeout 脚本里）——但先不广播
-        第 2 步  Alice 生成退款交易 T1'（nLockTime = 当前高度 + 5，输出给自己）——也不广播
-        第 3 步  Alice 请 Bob 对 T1' 签名，拿回 bob_signature_BTC
-        第 4 步  Alice 确认拿到 Bob 的签名之后，才广播 T1
+        coinExchangeScript(pk_sender, pk_recipient, hash_of_secret)
+            生成交换交易的锁定脚本（ScriptPubKey），规定该 UTXO 只能被两种方式之一花费。
 
-    也就是说，"把钱锁进去"这个动作，发生在"已经拿到退款所需签名"之后。于是：
+        coinExchangeScriptSig1(sig_recipient, secret)
+            知道秘密 x 的接收方赎回时使用的解锁脚本。
 
-        - 退款交易 T1' 走的是 ELSE 分支，需要 Alice 与 Bob 两个签名。
-        - Alice 在第 3 步已经持有 Bob 的签名，她自己随时能补上自己的那一个。
-        - 因此等 nLockTime 到期（高度 4,997,975 之后），Alice 可以单方面广播 T1'，
-          把 0.098 BTC 收回自己的地址，完全不需要 Bob 在线或配合。
+        coinExchangeScriptSig2(sig_sender, sig_recipient)
+            发送方与接收方共同签名、超时退款时使用的解锁脚本。
 
-    所以"总能拿回"成立的条件有三条，缺一不可：
-        (i)   退款交易在广播交换交易之前就已签好（时序保证）
-        (ii)  退款交易带 nLockTime，期限内不可用，避免她一边锁币一边立刻撤资，
-              给 Bob 留出足额的赎回时间窗
-        (iii) 退款分支只需发送方 + 接收方两个签名，不需要 x——即使 x 永远不公开，
-              退款路径依然可用
+2.2 ScriptPubKey 的结构与真实反汇编
 
-    若 Bob 老实赎回，x 就会出现在 T1 的 ScriptSig 中并被写入区块链；Alice 拿到 x 后
-    去 BCY 链赎回 Bob 的币。若 Bob 不赎回，则 5 个区块后 Alice 取回自己的币。两条路
-    都通向"Alice 不亏"。
+        OP_IF
+            OP_HASH160  <H(x)>  OP_EQUALVERIFY  <pk_recipient>  OP_CHECKSIG
+        OP_ELSE
+            <pk_sender>  OP_CHECKSIGVERIFY  <pk_recipient>  OP_CHECKSIG
+        OP_ENDIF
 
-2.2 简单 1/2 multisig 无法解决这个问题
+    Alice 的 BTC 交换交易实际生成的脚本（131 字节）反汇编如下：
 
-    "1/2 multisig"指 2 个参与方中任意 1 方签名即可花费。它无法胜任跨链原子交换，原因
-    有三层：
+        63                 OP_IF
+        a9                 OP_HASH160
+        14 853b7750…5720   PUSH 20 字节  H(x)
+        88                 OP_EQUALVERIFY
+        21 020f8309…6a63a  PUSH 33 字节  Bob 的 BTC 压缩公钥（recipient）
+        ac                 OP_CHECKSIG
+        67                 OP_ELSE
+        21 022d9a57…d721ea PUSH 33 字节  Alice 的 BTC 压缩公钥（sender）
+        ad                 OP_CHECKSIGVERIFY
+        21 020f8309…6a63a  PUSH 33 字节  Bob 的 BTC 压缩公钥（recipient）
+        ac                 OP_CHECKSIG
+        68                 OP_ENDIF
 
-    (1) 缺少哈希锁，两条链之间没有任何密码学绑定
-        原子性来自"同一把钥匙同时打开两把锁"。哈希锁的作用是：当一方在某条链上行使
-        花费权时，必须把 x 明文写进交易的 ScriptSig，从而**强制公开**秘密；另一方读到
-        x 后立刻在另一条链上复用它。1/2 multisig 里没有 x 这个共享变量，两条链上的两笔
-        交易彼此独立，"我在这条链拿钱"完全不会触发"你在那条链也能拿钱"。
+    BCY 侧结构完全相同，只是 (sender, recipient) 换成 Bob 和 Alice。
+    这正是整套协议的核心：两条链各自锁定一份资产，但用同一个 H(x) 绑定。
 
-    (2) 若两笔都设成 2-of-2，协议会卡死
-        双方互相等待对方先动：Alice 不广播，Bob 也不广播。更糟的是任一方可以单方面拒绝
-        签名使协议永久停滞。没有时间锁时，已经锁进脚本的币将永久无法取出；即便加上时间
-        锁，2-of-2 也只是"要么双方都同意、要么都等待"，本质上退化成普通的托管合约，失去
-        了"单方即可完成赎回"的原子性。
+2.3 两条花费路径的栈推演
 
-    (3) 若放宽成 1-of-2，则先动者恒占优势，等价于诈骗
-        Alice 可以在 BCY 链上先花掉 Bob 给的币（她只需自己签名），然后拒绝在 BTC 链上
-        履行；或者反向操作。由于没有任何机制强迫她把 x 交出来、也没有机制让 Bob 追回
-        她已花掉的 BCY，最后一定是"谁先动谁安全，后动者损失本金"。
+    （1）哈希锁分支：接收方持有 x
 
-    结论：原子性不是由多签的门限值提供的，而是由"哈希锁（把两笔交易绑成一体）+
-    时间锁（给守约方留退路）"的组合提供的。单靠多签无论 1/2 还是 2/2 都无法建立跨链的
-    互不信任信任关系。
+        ScriptSig = [sig_recipient, x, OP_TRUE]
+            栈 = sig_recipient | x | true
+            OP_IF 弹出 true → 进入 IF 分支，栈 = sig_recipient | x
+            OP_HASH160 把 x 压成 H(x)，与脚本中的 <H(x)> 由 OP_EQUALVERIFY 比较
+            PUSH pk_recipient 后 OP_CHECKSIG 验证 sig_recipient → 真
+
+        也就是说，想走这条路，必须同时具备「x 的原像」和「接收方的签名」。
+
+    （2）双签退款分支：发送方与接收方共同签名
+
+        ScriptSig = [sig_recipient, sig_sender, OP_FALSE]
+            栈 = sig_recipient | sig_sender | false
+            OP_IF 弹出 false → 进入 ELSE 分支，栈 = sig_recipient | sig_sender
+            PUSH pk_sender + OP_CHECKSIGVERIFY 验证 sig_sender
+            PUSH pk_recipient + OP_CHECKSIG 验证 sig_recipient → 真
+
+        这条路径完全不需要 x，只需要两个有效签名。
+
+    注意参数顺序：CScript(list) 的语义是「列表靠后的元素最后入栈、位于栈顶」。
+    因此 coinExchangeScriptSig2 的参数写作 (sig_sender, sig_recipient)，
+    返回列表却必须是 [sig_recipient, sig_sender, OP_FALSE]——写反则验证失败。
+
+2.4 两个设计取舍
+
+    （1）为什么用 OP_CHECKSIGVERIFY + OP_CHECKSIG，而不用 OP_2 OP_CHECKMULTISIG？
+
+        OP_CHECKMULTISIG 有一个历史遗留缺陷：执行时会额外弹出一个栈元素，因此
+        ScriptSig 必须在末尾多压一个 dummy 值（OP_0），且签名顺序必须与公钥顺序
+        严格对应。而这里只需要「两个签名都有效」，用 CHECKSIGVERIFY 串联两次单签
+        能达到完全等价的效果，栈布局更直观，也不会踩到 dummy 元素的坑。
+
+    （2）为什么脚本里没有时间锁（OP_CHECKLOCKTIMEVERIFY）？
+
+        因为 coinExchangeScript 的函数签名只有三个参数
+        (public_key_sender, public_key_recipient, hash_of_secret)，
+        没有任何位置可以传入锁定期。本方案的时间锁由退款交易自身的 nLockTime
+        字段承担：退款交易在构造时就设定 nLockTime = 当前链高度 + 锁定期，
+        在该高度之前矿工不会打包它。
 
 
 ================================================================================
-三、交易内容与先后次序，以及背后的设计原理（对应练习 C）
+三、Alice 为什么总能拿回钱？为什么 1/2 multisig 不行？    （对应练习 B）
 ================================================================================
 
-3.1 五笔交易一览
+3.1 三个必要条件
 
-    BTC Testnet3 链
-    ---------------------------------------------------------------
-    T0   充值交易（水龙头 -> Alice 地址）     utxo: 3511dd56...56c1:0
-    T1   交换交易  Alice -> 脚本              输入 T0，输出 0.099 BTC
-         输出脚本 = coinExchangeScript(A_alice, B_bob, H(x))
-         效果：Bob 凭 x 可取，或 Alice+Bob 双签可取
-    T1'  退款交易  脚本 -> Alice              输入 T1，输出 0.098 BTC
-         nLockTime = 4,997,975，需 Alice+Bob 双签
-    T3   赎回交易  脚本 -> Bob                输入 T1，输出 0.098 BTC（Bob 用 x 赎回）
+    以 Alice 用 coinExchangeScript 向 Bob 发送 BTC 为例。Alice 能保底取回资金，
+    依赖 swap.py 中三条同时成立的安排：
 
-    BCY Testnet 链
-    ---------------------------------------------------------------
-    T2   交换交易  Bob -> 脚本                输入 Bob 的 utxo，输出 0.009 BCY
-         输出脚本 = coinExchangeScript(B_bob, B_alice, H(x))
-         效果：Alice 凭 x 可取，或 Bob+Alice 双签可取
-    T2'  退款交易  脚本 -> Bob                输入 T2，输出 0.008 BCY
-         nLockTime = 2,611,497，需 Bob+Alice 双签
-    T4   赎回交易  脚本 -> Alice              输入 T2，输出 0.008 BCY（Alice 用 x 赎回）
+    （i）退款交易先签后广播
 
-    实测生成的交易骨架：
-        交易       txid（本地构造，未广播）
-        T1 BTC     99ddb9190a59316fa9802075560275d98e5c69c950e1891529816e8692ccc5a8
-        输出金额   9,900,000 聪 = 0.1 - 0.001
-        T1' BTC    nLockTime 4,997,975，输出 9,800,000 聪 = 0.1 - 2*0.001
-        T2 BCY     2905cd3bbe7bfaaeb9bb1837a714a1b30db5a288f7359688663a569972cda5de
-        输出金额   900,000 聪 = 0.01 - 0.001
-        T2' BCY    nLockTime 2,611,497，输出 800,000 聪 = 0.01 - 2*0.001
+        时序是：
+            构造 T1（交换交易，先不广播）
+            构造 T1'（退款交易，输出给自己）
+            请 Bob 对 T1' 签名，拿回 bob_signature
+            确认拿到签名之后，才广播 T1
 
-3.2 先后次序
+        「把钱锁出去」这一动作，发生在「已经持有退款所需签名」之后。
+        因此即使 Bob 此后彻底失联，Alice 手上也已有完整的退款凭据。
 
-    实际的完整时序是：
+    （ii）退款交易带 nLockTime
 
-      Alice 侧                                      Bob 侧
-      ---------------------------------------------------------------------
-      1. 生成 H(x)，自己持有 x
+        T1' 的 nLockTime = 5,261,067（当前高度 + 5）。在到期之前它不可被打包，
+        这既给了 Bob 足够的赎回时间窗，也防止 Alice 一边锁币一边立刻撤资。
+
+    （iii）退款分支不需要 x
+
+        退款走的是 ELSE 分支，只要求 Alice 和 Bob 各出一个签名。这意味着即使 x
+        永远不公开，这条路径依然可用。如果退款也依赖 x，那么「x 没泄露」就会同时
+        意味着「谁都取不回钱」，协议失去退路。
+
+    三者合起来：Bob 老实赎回，Alice 拿到 x 去赎 BCY；Bob 不赎回，5 个区块后
+    Alice 单方面广播 T1' 取回 BTC。两条路都不亏。
+
+3.2 为什么简单的 1/2 multisig 解决不了
+
+    （1）缺少哈希锁，两条链之间没有任何密码学绑定
+
+        原子性的来源是「同一把钥匙同时打开两把锁」。哈希锁强制：任何一方在某条链
+        上行使花费权时，必须把 x 明文写进 ScriptSig，从而**公开**秘密，对方读到
+        即可在另一条链复用。1/2 multisig 中没有 x 这个共享变量，两条链上的交易
+        彼此独立——「我在这条链拿了钱」不会触发「你也能在那条链拿钱」。
+
+    （2）若两笔都设成 2-of-2，协议会卡死
+
+        双方互相等待对方先行动，任一方都可以单方面拒绝签名使协议永久停滞。
+        没有时间锁时已锁入脚本的币将永远取不出；即便加上时间锁，2-of-2 也只是
+        「要么双方同意、要么都干等」，退化成普通托管合约，失去了「单方即可完成
+        赎回」的原子性。
+
+    （3）若放宽成 1-of-2，则先动者恒占优势
+
+        Alice 可以在 BCY 链上先花掉 Bob 给的币（她只需自己签名），然后拒绝在
+        BTC 链上履行；反向亦然。没有任何机制强迫她交出 x，也没有机制让 Bob 追回
+        已花掉的 BCY，结果是「谁先动谁安全，后动者损失本金」。
+
+    结论：原子性不是由多签的门限值提供的，而是由「哈希锁（绑定两笔交易）+
+    时间锁（给守约方退路）」的组合提供的。
+
+
+================================================================================
+四、交易内容与先后次序，以及背后的设计原理             （对应练习 C）
+================================================================================
+
+4.1 六笔交易一览
+
+  BTC Testnet3
+  --------------------------------------------------------------------------
+  T1   交换交易   Alice 的 UTXO(19,738) → 交换脚本   输出 19,638 聪
+       锁定脚本 = coinExchangeScript(Alice, Bob, H(x))，Bob 凭 x 可取，
+       或 Alice+Bob 双签可取
+  T1'  退款交易   T1:0 → Alice 地址                  输出 19,538 聪
+       nLockTime = 5,261,067，需 Alice+Bob 双签
+  T3   赎回交易   T1:0 → Bob 地址                    输出 19,538 聪
+       Bob 用 x 走哈希锁分支
+
+  BCY Testnet
+  --------------------------------------------------------------------------
+  T2   交换交易   Bob 的 UTXO(50,000) → 交换脚本     输出 49,900 聪
+       锁定脚本 = coinExchangeScript(Bob, Alice, H(x))
+  T2'  退款交易   T2:0 → Bob 地址                    输出 49,799 聪
+       nLockTime = 2,622,058，需 Bob+Alice 双签
+  T4   赎回交易   T2:0 → Alice 地址                  输出 49,799 聪
+       Alice 用 x 走哈希锁分支
+
+4.2 先后次序
+
+      Alice 侧                                         Bob 侧
+      ------------------------------------------------------------------
+      1. 生成 x，算出 H(x)，x 自己保留
       2. 构造 T1（不广播）
-      3. 构造 T1'（nLockTime=H_btc+5，不广播）
-      ----------------------------------------------> 4. Bob 对 T1' 签名
-      5. 收下 bob_signature_BTC
-      ----------------------------------------------> 6. 构造 T2、T2'
-      7. 广播 T1                                     （此时 Alice 的币已锁定）
-      8. Alice 对 T2' 签名，交给 Bob
-                                                     9. Bob 广播 T2
-     10. Alice 用 x 赎回 T2（生成 T4）—— x 随之上链
-                                                     11. Bob 从链上读出 x，赎回 T1（生成 T3）
+      3. 构造 T1'（nLockTime = 高度+5，不广播）
+      --------------------------------------------------> 4. 对 T1' 签名
+      5. 收下 bob_signature
+      6. 广播 T1        ← 此刻币才真正锁出，且已有退款后路
+      --------------------------------------------------> 7. 构造 T2、T2'
+      8. 对 T2' 签名并交给 Bob
+      --------------------------------------------------> 9. 广播 T2
+      10. 广播 T4 取走 BCY —— x 随之写到链上
+      --------------------------------------------------> 11. 从链上读出 x，广播 T3 取走 BTC
 
-    关键约束：**签名永远先于广播**。任何一方把自己要广播的交易发出去之前，必须已经拿到
-    对方对自己退款交易的签名。这样即使对方此后彻底失联，自己也有条可用的退款后路。
+    核心约束：**签名永远先于广播**。任何一方把自己要广播的交易发出去之前，必须
+    已经拿到对方对自己退款交易的签名。
 
-3.3 设计原理
+4.3 设计原理
 
-    (1) 为什么退款交易也要双签，而不让发送方单签就好？
-        如果退款只需 Alice 单签，那么 Alice 可以做这样一件事：先广播 T1 让 Bob 看到币，
-        然后立刻广播 T1' 把币撤回来，Bob 还没反应过来 x 就作废了。要求 Bob 也签名，
-        相当于让 Bob 在"同意这笔退款会生效"这件事上留下抵押：Alice 一旦撤资，Bob 那份
-        签名也就跟着生效了，但 Bob 并无损失；反过来，若 Bob 想赖账，他也无法独自撤回 T2。
+    （1）为什么退款也要双方签名，而不让发送方单签即可？
 
-    (2) 为什么 alice_locktime 必须大于 bob_locktime？
-        两条链的出块速度不同，谁先到期谁就获得"可以先撤"的主动权。令 Bob 的退款窗口
-        （3 块）先于 Alice 的（5 块）到期，实际效果是**给 Alice 更长的赎回窗口**：
-        Alice 在前 5 块内任何时刻赎回 BCY 都还来得及，而 Bob 必须等到第 3 块之后才能撤。
-        如果反过来（Alice 的窗口更短），就可能出现"Alice 还没赎，Bob 已经撤资走人"的
-        竞态，原子性被破坏。所以注释里写的是 alice_locktime MUST be > bob_locktime。
+        如果退款只需 Alice 单签，她可以先广播 T1 让 Bob 看到币，随即广播 T1'
+        把钱撤回，Bob 来不及反应。要求 Bob 也签名，等于让 Bob 在「这笔退款会生效」
+        这件事上留下共同责任；同时 Bob 也无法独自撤回 T2。
 
-    (3) 为什么用绝对高度而不是相对时间？
-        作业框架给的是 nLockTime（绝对锁），语义是"该高度之前交易不合法"。用它配合
-        "当前链高度 + 偏移"来构造，等价于相对延迟，但实现更简单，也便于本地验证时直接
-        比较数值。代价是高度必须填对，因此注释里提示要去 live.blockcypher.com 查实时高度
-        （模板中 2018 年的旧值 1,439,691 / 2,062,296 已过期，本文使用实测的
-        4,997,970 / 2,611,494）。
+    （2）为什么 alice_locktime 必须大于 bob_locktime？
+
+        锁定期决定谁先获得「可以先撤」的主动权。令 Bob 的窗口（3 块）先于
+        Alice 的（5 块）到期，实际效果是给 Alice 更长的赎回窗口：她在前 5 块内
+        任何时刻赎回 BCY 都还来得及，而 Bob 必须等到第 3 块之后才能撤。
+        若反过来，就可能出现「Alice 还没赎回，Bob 已撤资离场」的竞态。
+
+    （3）为什么用绝对高度 nLockTime？
+
+        作业框架给出的是绝对锁定语义「该高度之前交易不合法」，配合
+        「当前高度 + 偏移」使用，等价于相对延迟且实现简单。代价是高度必须填准，
+        填低了会让退款交易立即生效、时间锁形同虚设。
 
 
 ================================================================================
-四、成功与失败时的数字货币流转（对应练习 D）
+五、成功与失败时数字货币的流转                        （对应练习 D）
 ================================================================================
 
-4.1 成功：双方都诚实，x 正常公开（alice_redeems = True）
+5.1 成功：x 正常公开（alice_redeems = True）
 
-    BTC 链                                          BCY 链
-    ----------                                      ----------
-    Alice 地址
-       |  T0 充值
-       v
-    T1 交换交易 ──(0.099 BTC 锁入脚本)          Bob 地址
-       |                                            |  T2 充值
-       |                                            v
-       |                                        T2 交换交易 ──(0.009 BCY 锁入脚本)
-       |                                            |
-       |                                            |  Alice 持 x，生成 T4
-       |                                            v
-       |                                        T4 赎回交易
-       |                                        x 明文写入 ScriptSig
-       |                                        BCY 归 Alice
-       |                                            |
-       +<──────────── x 从 BCY 链上被读出 ──────────┘
-       |
-       v
-    T3 赎回交易（Bob 用同一 x）
-    0.098 BTC 归 Bob
+    BTC 链                                    BCY 链
+    --------                                  --------
+    Alice 的 UTXO 19,738
+        │ T1
+        ▼
+    交换脚本锁定 19,638                       Bob 的 UTXO 50,000
+        │                                          │ T2
+        │                                          ▼
+        │                                     交换脚本锁定 49,900
+        │                                          │
+        │                                          │ T4（Alice 持 x，明文写入 ScriptSig）
+        │                                          ▼
+        │                                      BCY 归 Alice  49,799
+        │                                          │
+        └──────── x 从 BCY 链上被读出 ◄────────────┘
+        │ T3（Bob 用同一 x）
+        ▼
+    BTC 归 Bob  19,538
 
-    最终结果：
-        Alice：付出 0.1 BTC，得到 0.008 BCY
-        Bob  ：付出 0.01 BCY，得到 0.098 BTC
-        两条链各完成一次所有权转移，且双方都无需信任对方的善意。
+    结果：Alice 付出 0.00019738 BTC，得到 0.00049799 BCY；
+          Bob   付出 0.0005 BCY，得到 0.00019538 BTC。
+    两条链各完成一次所有权转移，双方都无需信任对方。
 
-    原子性体现在：x 只有在上链时才会公开。Alice 一旦赎回 BCY，x 就永久留在 BCY 链上，
-    Bob 随时可以拿去花 BTC 那笔；反过来如果 Alice 迟迟不赎，Bob 也不损失什么。
+5.2 失败：x 从未公开（alice_redeems = False）
 
-4.2 失败：一方不赎回，走退款通道（alice_redeems = False）
+    BTC 链                                    BCY 链
+    --------                                  --------
+    T1 交换脚本锁定 19,638                    T2 交换脚本锁定 49,900
+        │                                          │
+        │  x 始终留在 Alice 本地内存，未上链         │
+        │                                          │
+        │ 等至高度 5,261,067                        │ 等至高度 2,622,058
+        ▼                                          ▼
+    T1' 退款（Alice+Bob 双签）                T2' 退款（Bob+Alice 双签）
+    19,538 聪归 Alice                          49,799 聪归 Bob
 
-    BTC 链                                          BCY 链
-    ----------                                      ----------
-    T1 交换交易（币锁住）                        T2 交换交易（币锁住）
-       |                                            |
-       |  x 从头到尾没有上链                          |
-       |                                            |
-       | 等待至高度 4,997,975                         | 等待至高度 2,611,497
-       v                                            v
-    T1' 退款交易                                 T2' 退款交易
-    Alice + Bob 双签                             Bob + Alice 双签
-    0.098 BTC 归 Alice                           0.008 BCY 归 Bob
+    结果：双方各自取回本金，仅损失手续费（每笔 100 聪）。
+    由于 x 从未上链，两条链上的哈希锁分支都不可用，只能走 ELSE 分支。
 
-    最终结果：双方各自拿回本金，只损失了 tx_fee（各 0.002 的手续费差额留在交易里）。
-    秘密 x 始终没有离开 Alice 的本地内存，因此两条链上的交换脚本都只能走 ELSE 分支，
-    哈希锁分支永远无法被触发。
+5.3 恶意情形
 
-4.3 恶意情形分析（为什么不能单方获利）
+    情形 1：Alice 赎回 BCY 后赖掉 BTC？
+        不可能。赎回 BCY 时 x 已写入链上交易，Bob 读到即可花费 BTC 那笔，
+        不需要 Alice 配合。Alice 想赖账只能永远不赎 BCY，那她一分也拿不到。
 
-    情形 1：Alice 赎回 BCY 后想赖掉 BTC？
-        不可能。她赎回 BCY 时 x 已经写进 BCY 链的交易，Bob 读到即可以用 x 花掉 BTC 那笔，
-        这不需要 Alice 配合。Alice 赖账的唯一办法是永远不赎 BCY，但那样她一分钱也拿不到。
-
-    情形 2：Bob 拿到 x 后不赎回 BTC，反而去抢 BCY？
-        无意义。T2 的哈希锁分支只认"接收方 = Alice"的签名，Bob 是发送方，他的公钥只能
-        走 ELSE 分支且需要 Alice 签名。他既赎不走 BCY，也不影响 Alice 已经到手的钱。
+    情形 2：Bob 拿到 x 后不赎 BTC，改去抢 BCY？
+        无意义。T2 的哈希锁分支只认 Alice 的签名，Bob 是发送方，只能走 ELSE
+        分支且需要 Alice 签名，他既取不走 BCY，也不影响 Alice 已到手的钱。
 
     情形 3：Alice 广播 T1 后立刻想撤回？
-        她能用的只有 T1'，而 T1' 的 nLockTime 是 4,997,975，期限未到时矿工不会打包，
-        且它还需要 Bob 的签名——Bob 完全可以不提供。等期限到了，Bob 早就有机会赎回。
+        她只能广播 T1'，而 T1' 的 nLockTime 是 5,261,067，期限未到时不会被
+        打包，且还需要 Bob 的签名。等期限到了，Bob 早有赎回机会。
 
-    情形 4：某一方在 x 已公开后同时抢两条链？
-        抢不到。同一个 x 在同一时刻对双方等价，但两条链上的脚本把"谁能花"写死了：
-        BTC 锁给 Bob（哈希分支）+ Alice/Bob（退款分支），BCY 锁给 Alice（哈希分支）+
-        Bob/Alice（退款分支）。x 只解锁对方那条链，自己的链仍需自己的签名。
+    情形 4：某一方在 x 公开后同时抢两条链？
+        抢不到。两条链的脚本把「谁能花」写死了：BTC 锁给 Bob（哈希分支）+
+        Alice/Bob（退款分支），BCY 锁给 Alice（哈希分支）+ Bob/Alice（退款分支）。
+        x 只解锁对方那条链，自己这条链仍需自己的签名。
 
-    这几种情形合起来说明了本方案的核心性质：**任何一方都无法在对方受损的前提下获利，
-    因此理性的双方都会选择完成交换**。
+    综合来看：任何一方都无法在对方受损的前提下获利，因此理性的双方都会选择
+    完成交换——这正是原子性的含义。
 
 
 ================================================================================
-五、本地验证结果（实测）
+六、实测验证结果
 ================================================================================
 
-5.1 两条分支的运行结果
+6.1 两条分支
 
-    两个分支均以 python swap.py 在 broadcast_transactions=False 下运行，退出码 0，
-    全程无异常、无网络请求。
+    broadcast_transactions = False 下运行 swap.py，退出码均为 0。
 
-    分支一  alice_redeems = True   （见 run_redeem.txt）
+    分支一  alice_redeems = True
         Alice swap tx (BTC) created successfully!
         Bob swap tx (BCY) created successfully!
         Alice redeem from swap tx (BCY) created successfully!
         Bob redeem from swap tx (BTC) created successfully!
 
-    分支二  alice_redeems = False  （见 run_refund.txt）
+    分支二  alice_redeems = False
         Alice swap tx (BTC) created successfully!
         Bob swap tx (BCY) created successfully!
         Bob return coins (BCY) tx created successfully!
         Alice return coins tx (BTC) created successfully!
 
-    两条分支各触发 4 次 VerifyScript（各自两条链的交换交易输入各 1 次，赎回或退款路径
-    各 1 次），合计 8 次全部返回真，说明 ScriptSig + ScriptPubKey 的组合在本地是有效的。
+    每条分支触发 4 次 VerifyScript（两条链的交换交易输入各 1 次，赎回或退款路径
+    各 1 次），两条分支共 8 次，全部返回真。
 
-5.2 脚本的负向用例
+6.2 结构断言（按双方真实 UTXO 金额校验，10/10 通过）
 
-    为避免"能通过就算对"的误判，额外对 coinExchangeScript 做了 5 组反例，均按预期失败：
+        T1  交换输出 = 19,638 聪    输入 19,738 − 矿工费 100
+        T1' 退款输出 = 19,538 聪    nLockTime = 5,261,067
+        T2  交换输出 = 49,900 聪    输入 50,000 − 矿工费 100
+        T2' 退款输出 = 49,799 聪    nLockTime = 2,622,058
+        Alice 的 nLockTime 严格大于 Bob 的
+        两条链的锁定脚本均为 OP_IF … OP_ELSE … OP_ENDIF 结构（首字节 63、末字节 68）
+        两条链的锁定脚本嵌入完全相同的 H(x)
 
-        错误 secret                -> OP_EQUALVERIFY failed
-        退款分支只给单签           -> OP_CHECKSIGVERIFY failed
-        用错公钥走哈希分支         -> scriptPubKey returned false
-        Sig2 的两个签名对调        -> OP_CHECKSIGVERIFY failed
-        空 scriptSig               -> missing arguments for OP_IF
+6.3 负向测试
 
-    另有 5 组结构性断言通过：交换输出金额 0.099 BTC、退款输出金额 0.098 BTC、
-    Bob 侧交换输出 0.009 BCY、Alice 的 nLockTime（4,997,975）严格大于 Bob 的
-    （2,611,497）、ScriptPubKey 首字节为 OP_IF 且末字节为 OP_ENDIF。
+    为避免「能跑通就算对」的误判，对 coinExchangeScript 额外做了 5 组反例，
+    均按预期失败：
 
-5.3 结论
+        错误 secret                → OP_EQUALVERIFY failed
+        退款分支只给单签           → OP_CHECKSIGVERIFY failed
+        用错公钥走哈希分支         → scriptPubKey returned false
+        Sig2 的两个签名对调        → OP_CHECKSIGVERIFY failed
+        空 scriptSig               → missing arguments for OP_IF
 
-    练习 A（ScriptPubKey）、练习 B（两个 ScriptSig）已实现并通过正向与负向验证；
-    练习 C 的两条分支均可在纯本地环境下复现；本文件即练习 D 的交付内容。
 
+================================================================================
+七、实现说明与已知问题
+================================================================================
+
+7.1 金额与手续费
+
+    tx_fee = 0.000001（100 聪）。代码不做找零，因此 amount_to_send 必须等于所花
+    UTXO 的实际金额，差额自动成为矿工费。双方的 UTXO 分别只有 19,738 与 50,000
+    聪，若沿用模板默认的 tx_fee = 0.001，退款金额会变成负数。
+
+7.2 关于 1 聪的偏差
+
+    T2' 与 T4 的金额为 49,799 聪，理论值 49,800 聪。原因是
+    0.0005 − 2×0.000001 在双精度浮点下得到 0.000497999999999999，
+    经 int() 截断后少 1 聪。交易本身合法（矿工费 101 而非 100 聪），
+    不影响脚本验证与协议正确性。
+
+7.3 关于链高度的取值来源
+
+    PDF 建议使用 live.blockcypher.com 查询高度。实测发现 BlockCypher 的
+    btc/test3 节点已停止同步：其返回的区块高度停留在 4,997,970，且一周内区块
+    哈希不变，而真实 testnet3 已到 5,261,062。若照抄该值，refund 交易的
+    nLockTime 会落在过去，时间锁失效。故 BTC 高度改用
+    https://mempool.space/testnet/api/blocks/tip/height，BCY 高度仍用
+    https://api.blockcypher.com/v1/bcy/test（该节点同步正常）。
+
+7.4 关于 BlockCypher 账户
+
+    作业要求注册 BlockCypher 获取 API token，但 accounts.blockcypher.com 的
+    注册入口目前返回 404，新账户无法创建。BCY 密钥改为按 keys.py 模板既有的
+    CBitcoinSecret.from_secret_bytes 形式在本地生成（32 字节随机数），
+    密码学上与 API 返回的私钥等价，不影响脚本与验证。
 
 ================================================================================
 附录：文件清单
 ================================================================================
 
-    swap.py               流程编排与参数配置（已填写）
-    swap_scripts.py       三个脚本函数（核心实现）
-    alice.py               Alice 侧交易构造（框架提供）
-    bob.py                 Bob 侧交易构造（框架提供）
+    swap.py               流程编排与参数（已填写双方 UTXO、金额、链高度、锁定期）
+    swap_scripts.py       三个脚本函数（本次实现的核心）
     keys.py               四个测试网私钥及派生地址（已填写）
-    keygen.py             BTC 密钥生成工具（框架提供）
-    p2pkh.py              P2PKH 脚本与单笔转账工具（已填写）
-    split_test_coins.py   UTXO 拆分工具（已填写）
-    utils.py              交易构造与广播的公共函数（框架提供）
+    alice.py / bob.py     两侧交易构造、签名、广播（框架提供，未改动）
+    utils.py              交易构造、签名、校验、广播的公共函数（框架提供，未改动）
+    p2pkh.py              P2PKH 脚本与单笔转账工具
+    split_test_coins.py   UTXO 拆分工具
+    keygen.py             BTC 测试网密钥生成
     requirements.txt      依赖清单
     design_doc.txt        本文档
     run_redeem.txt        分支一运行输出
     run_refund.txt        分支二运行输出
-
-说明：本次运行采用本地验证模式（broadcast_transactions = False），未向区块链广播任何
-交易，因此 swap.py 中的 txid 为合法的 64 位十六进制占位值，不对应链上真实的 UTXO。
-这是实验要求所允许的模式——练习 C 明确说明"我们不需要广播事务"，全部验证在本地完成。
-若需实际上链，只需把 txid、utxo_index、金额替换为真实 UTXO 并置
-broadcast_transactions = True 即可，脚本与流程无需任何改动。
 
 ================================================================================
